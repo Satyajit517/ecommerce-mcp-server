@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -26,14 +27,24 @@ def validate_uuid(value: str, field_name: str = "id") -> str:
     return cleaned
 
 
+class CategorySummary(BaseModel):
+    """Preserved category summary information from the Product Service."""
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    id: Optional[str] = Field(None, description="Category unique identifier (UUID).")
+    name: Optional[str] = Field(None, description="Category display name.")
+    code: Optional[str] = Field(None, description="Category code if available.")
+    description: Optional[str] = Field(None, description="Category description if available.")
+
+
 class ProductSearchFilter(BaseModel):
-    """Input parameters for searching products."""
+    """Validated input parameters for searching products."""
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     search: Optional[str] = Field(None, description="Free-text search query across product name, brand, and description.")
     category_id: Optional[str] = Field(None, alias="categoryId", description="Filter by category UUID.")
-    min_price: Optional[float] = Field(None, alias="minPrice", ge=0.0, description="Minimum price filter (>= 0).")
-    max_price: Optional[float] = Field(None, alias="maxPrice", ge=0.0, description="Maximum price filter (>= 0).")
+    min_price: Optional[Decimal] = Field(None, alias="minPrice", ge=Decimal("0.0"), description="Minimum price filter (>= 0).")
+    max_price: Optional[Decimal] = Field(None, alias="maxPrice", ge=Decimal("0.0"), description="Maximum price filter (>= 0).")
     brand: Optional[str] = Field(None, description="Filter by product brand.")
     status: Optional[str] = Field(None, description="Filter by product status (e.g., ACTIVE).")
     page: int = Field(0, ge=0, description="Page index (0-indexed, default is 0).")
@@ -66,9 +77,9 @@ class ProductSearchFilter(BaseModel):
         if self.category_id:
             params["categoryId"] = self.category_id
         if self.min_price is not None:
-            params["minPrice"] = self.min_price
+            params["minPrice"] = str(self.min_price)
         if self.max_price is not None:
-            params["maxPrice"] = self.max_price
+            params["maxPrice"] = str(self.max_price)
         if self.brand:
             params["brand"] = self.brand
         if self.status:
@@ -82,11 +93,12 @@ class ProductItem(BaseModel):
 
     product_id: str = Field(..., alias="productId", description="Unique product UUID.")
     seller_id: Optional[str] = Field(None, alias="sellerId", description="Seller UUID.")
-    category_id: Optional[str] = Field(None, alias="categoryId", description="Category UUID or identifier.")
+    category_id: Optional[str] = Field(None, alias="categoryId", description="Category UUID.")
+    category: Optional[CategorySummary] = Field(None, description="Preserved category summary information.")
     name: str = Field(..., description="Product name.")
     brand: Optional[str] = Field(None, description="Brand name.")
     description: Optional[str] = Field(None, description="Product description.")
-    price: Optional[float] = Field(None, description="Product price.")
+    price: Optional[Decimal] = Field(None, description="Product price as a decimal-safe value.")
     sku: Optional[str] = Field(None, description="Stock Keeping Unit code.")
     status: Optional[str] = Field(None, description="Product status (e.g. ACTIVE).")
     created_at: Optional[str] = Field(None, alias="createdAt", description="Creation timestamp.")
@@ -94,7 +106,7 @@ class ProductItem(BaseModel):
 
     @classmethod
     def from_api_data(cls, data: dict[str, Any]) -> ProductItem:
-        """Construct ProductItem from API response dictionary, handling naming variations."""
+        """Construct ProductItem from API response dictionary, handling naming variations and preserving category."""
         product_id = (
             data.get("productId")
             or data.get("id")
@@ -106,20 +118,35 @@ class ProductItem(BaseModel):
             or data.get("seller_id")
             or (data.get("seller") if isinstance(data.get("seller"), str) else None)
         )
-        category_id = (
-            data.get("categoryId")
-            or data.get("category_id")
-            or (data.get("category", {}).get("id") if isinstance(data.get("category"), dict) else None)
-            or (data.get("category") if isinstance(data.get("category"), str) else None)
-        )
+
+        category_data = data.get("category")
+        category_summary: Optional[CategorySummary] = None
+        category_id = data.get("categoryId") or data.get("category_id")
+
+        if isinstance(category_data, dict):
+            cat_id = category_data.get("id") or category_data.get("categoryId") or category_id
+            category_summary = CategorySummary(
+                id=str(cat_id) if cat_id else None,
+                name=category_data.get("name") or category_data.get("categoryName"),
+                code=category_data.get("code"),
+                description=category_data.get("description"),
+            )
+            if not category_id and cat_id:
+                category_id = cat_id
+        elif isinstance(category_data, str) and category_data.strip():
+            category_summary = CategorySummary(name=category_data.strip())
+
         name = data.get("name") or data.get("productName") or data.get("title") or "Unnamed Product"
         brand = data.get("brand")
         description = data.get("description")
-        price = data.get("price")
-        if price is not None:
+
+        # Decimal-safe price parsing (avoids binary floating-point inaccuracy)
+        price_raw = data.get("price")
+        price: Optional[Decimal] = None
+        if price_raw is not None:
             try:
-                price = float(price)
-            except (ValueError, TypeError):
+                price = Decimal(str(price_raw))
+            except (InvalidOperation, TypeError, ValueError):
                 price = None
 
         sku = data.get("sku")
@@ -141,6 +168,7 @@ class ProductItem(BaseModel):
             productId=str(product_id),
             sellerId=str(seller_id) if seller_id is not None else None,
             categoryId=str(category_id) if category_id is not None else None,
+            category=category_summary,
             name=name,
             brand=brand,
             description=description,

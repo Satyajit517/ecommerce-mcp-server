@@ -5,10 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-try:
-    import httpx
-except ImportError:
-    import httpx2 as httpx  # type: ignore
+import httpx
 
 from .models import (
     ProductItem,
@@ -53,12 +50,19 @@ class ProductServiceClient:
         raw_url = base_url or os.getenv("PRODUCT_SERVICE_URL", "http://localhost:8082")
         self.base_url = raw_url.rstrip("/")
         self.timeout = timeout
-        self._custom_client = http_client
+        self._client = http_client if http_client is not None else httpx.Client(timeout=self.timeout)
+        self._owns_client = http_client is None
 
-    def _get_client(self) -> httpx.Client:
-        if self._custom_client is not None:
-            return self._custom_client
-        return httpx.Client(timeout=self.timeout)
+    def close(self) -> None:
+        """Close the underlying HTTP client if owned by this instance."""
+        if self._owns_client and not self._client.is_closed:
+            self._client.close()
+
+    def __enter__(self) -> ProductServiceClient:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     def _extract_error_message(self, response: httpx.Response) -> str:
         """Extract user-friendly error message from an HTTP error response."""
@@ -69,7 +73,7 @@ class ProductServiceClient:
                     data.get("message")
                     or data.get("error")
                     or data.get("detail")
-                    or response.text
+                    or f"HTTP {response.status_code}"
                 )
         except Exception:
             pass
@@ -94,8 +98,7 @@ class ProductServiceClient:
         url = f"{self.base_url}/api/products/{valid_id}"
 
         try:
-            client = self._get_client()
-            response = client.get(url)
+            response = self._client.get(url)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
             raise ProductServiceUnavailableError(
                 f"Product Service is unavailable at {self.base_url}. Error: {exc}"
@@ -143,8 +146,7 @@ class ProductServiceClient:
         params = filter_criteria.to_query_params()
 
         try:
-            client = self._get_client()
-            response = client.get(url, params=params)
+            response = self._client.get(url, params=params)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
             raise ProductServiceUnavailableError(
                 f"Product Service is unavailable at {self.base_url}. Error: {exc}"

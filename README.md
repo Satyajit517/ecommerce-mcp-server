@@ -19,6 +19,53 @@ Product Service (Microservice)
 Product DB
 ```
 
+```                         
+                         ┌───────────────┐
+                         │      User     │
+                         └───────┬───────┘
+                                 │
+                                 ▼
+                         ┌───────────────┐
+                         │   MCP Client  │
+                         │ Claude/etc.   │
+                         └───────┬───────┘
+                                 │
+                            Access Token
+                                 │
+                                 ▼
+                    ┌────────────────────────┐
+                    │       MCP Server       │
+                    │                        │
+                    │ Authentication         │
+                    │ Authorization          │
+                    │                        │
+                    │ Tools                  │
+                    │ ├─ searchProducts      │
+                    │ ├─ getMyCart           │
+                    │ ├─ getMyOrders         │
+                    │ ├─ createOrder         │
+                    │ └─ getPaymentStatus    │
+                    └───────────┬────────────┘
+                                │
+                         REST / HTTP
+                                │
+                                ▼
+                       ┌────────────────┐
+                       │  API Gateway   │
+                       └───────┬────────┘
+                               │
+             ┌─────────────────┼─────────────────┐
+             ▼                 ▼                 ▼
+        User Service      Product Service    Order Service
+                                                   │
+                                          ┌────────┴────────┐
+                                          ▼                 ▼
+                                    Inventory Service  Payment Service
+                                                          │
+                                                          ▼
+                                                       Razorpay
+```
+
 ## Initial Phase 1 Tools
 
 ### 1. `search_products`
@@ -26,9 +73,9 @@ Search and filter products using the Product Service search endpoint (`GET /api/
 
 - **Parameters**:
   - `search` *(str, optional)*: Free-text search query across product name, brand, and description.
-  - `categoryId` / `category_id` *(str, optional)*: Category UUID filter.
-  - `minPrice` / `min_price` *(float, optional)*: Minimum price filter (>= 0).
-  - `maxPrice` / `max_price` *(float, optional)*: Maximum price filter (>= 0, >= minPrice).
+  - `categoryId` *(str, optional)*: Category UUID filter.
+  - `minPrice` *(Decimal/number, optional)*: Minimum price filter (>= 0).
+  - `maxPrice` *(Decimal/number, optional)*: Maximum price filter (>= 0, >= minPrice).
   - `brand` *(str, optional)*: Brand name filter.
   - `status` *(str, optional)*: Product status filter (e.g., `ACTIVE`).
   - `page` *(int, default=0)*: Page index (0-indexed).
@@ -38,7 +85,7 @@ Search and filter products using the Product Service search endpoint (`GET /api/
 Retrieve details of a specific product by its UUID (`GET /api/products/{id}`).
 
 - **Parameters**:
-  - `productId` / `product_id` *(str, required)*: Valid UUID of the product.
+  - `productId` *(str, required)*: Valid UUID of the product.
 
 ## Configuration
 

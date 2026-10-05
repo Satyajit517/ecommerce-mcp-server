@@ -1,7 +1,9 @@
 """Unit tests for data models and input validation."""
 
 import unittest
+from decimal import Decimal
 from ecommerce_mcp_server.models import (
+    CategorySummary,
     ProductItem,
     ProductSearchFilter,
     ProductSearchResult,
@@ -32,8 +34,8 @@ class TestModels(unittest.TestCase):
         filter_criteria = ProductSearchFilter(
             search="phone",
             categoryId=cat_id,
-            minPrice=100.0,
-            maxPrice=500.0,
+            minPrice=Decimal("100.00"),
+            maxPrice=Decimal("500.00"),
             brand="Samsung",
             status="ACTIVE",
             page=2,
@@ -42,8 +44,8 @@ class TestModels(unittest.TestCase):
         params = filter_criteria.to_query_params()
         self.assertEqual(params["search"], "phone")
         self.assertEqual(params["categoryId"], cat_id)
-        self.assertEqual(params["minPrice"], 100.0)
-        self.assertEqual(params["maxPrice"], 500.0)
+        self.assertEqual(params["minPrice"], "100.00")
+        self.assertEqual(params["maxPrice"], "500.00")
         self.assertEqual(params["brand"], "Samsung")
         self.assertEqual(params["status"], "ACTIVE")
         self.assertEqual(params["page"], 2)
@@ -51,7 +53,7 @@ class TestModels(unittest.TestCase):
 
     def test_search_filter_min_greater_than_max_raises(self):
         with self.assertRaises(ValueError):
-            ProductSearchFilter(minPrice=500.0, maxPrice=100.0)
+            ProductSearchFilter(minPrice=Decimal("500.0"), maxPrice=Decimal("100.0"))
 
     def test_search_filter_invalid_category_uuid(self):
         with self.assertRaises(ValueError):
@@ -62,12 +64,19 @@ class TestModels(unittest.TestCase):
             ProductSearchFilter(page=-1)
         with self.assertRaises(ValueError):
             ProductSearchFilter(size=0)
+        with self.assertRaises(ValueError):
+            ProductSearchFilter(size=101)
 
-    def test_product_item_from_api_data(self):
+    def test_product_item_from_api_data_with_decimal_price(self):
         api_data = {
             "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
             "sellerId": "d3b07384-d113-4cd0-93cb-b7b51b75960d",
-            "category": {"id": "4f9d2c88-1234-5678-90ab-cdef12345678"},
+            "category": {
+                "id": "4f9d2c88-1234-5678-90ab-cdef12345678",
+                "name": "Smartphones",
+                "code": "TECH-PHONE",
+                "description": "Mobile phones and devices",
+            },
             "productName": "Galaxy S24",
             "brand": "Samsung",
             "description": "Flagship smartphone",
@@ -80,9 +89,26 @@ class TestModels(unittest.TestCase):
         item = ProductItem.from_api_data(api_data)
         self.assertEqual(item.product_id, "3fa85f64-5717-4562-b3fc-2c963f66afa6")
         self.assertEqual(item.name, "Galaxy S24")
-        self.assertEqual(item.price, 799.99)
+        self.assertIsInstance(item.price, Decimal)
+        self.assertEqual(item.price, Decimal("799.99"))
         self.assertEqual(item.category_id, "4f9d2c88-1234-5678-90ab-cdef12345678")
+        self.assertIsNotNone(item.category)
+        self.assertEqual(item.category.name, "Smartphones")
+        self.assertEqual(item.category.code, "TECH-PHONE")
+        self.assertEqual(item.category.description, "Mobile phones and devices")
         self.assertEqual(item.status, "ACTIVE")
+
+    def test_price_no_float_precision_loss(self):
+        # 0.1 + 0.2 in binary float is 0.30000000000000004
+        # Decimal ensures exact representation
+        api_data = {
+            "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+            "name": "Micro-transaction item",
+            "price": "0.30",
+        }
+        item = ProductItem.from_api_data(api_data)
+        self.assertEqual(item.price, Decimal("0.30"))
+        self.assertEqual(str(item.price), "0.30")
 
 
 if __name__ == "__main__":

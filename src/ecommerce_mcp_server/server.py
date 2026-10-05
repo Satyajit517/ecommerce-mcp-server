@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from typing import Any, Optional
 
 from fastmcp import FastMCP
@@ -38,6 +39,8 @@ def get_client() -> ProductServiceClient:
 def set_client(client: Optional[ProductServiceClient]) -> None:
     """Set or override the ProductServiceClient instance (useful for unit testing)."""
     global _client
+    if _client is not None and _client != client:
+        _client.close()
     _client = client
 
 
@@ -45,11 +48,8 @@ def set_client(client: Optional[ProductServiceClient]) -> None:
 def search_products(
     search: Optional[str] = None,
     categoryId: Optional[str] = None,
-    category_id: Optional[str] = None,
-    minPrice: Optional[float] = None,
-    min_price: Optional[float] = None,
-    maxPrice: Optional[float] = None,
-    max_price: Optional[float] = None,
+    minPrice: Optional[Decimal] = None,
+    maxPrice: Optional[Decimal] = None,
     brand: Optional[str] = None,
     status: Optional[str] = None,
     page: int = 0,
@@ -62,11 +62,8 @@ def search_products(
     Args:
         search: Free-text search keyword across product name, brand, and description.
         categoryId: Filter by category UUID (e.g., '3fa85f64-5717-4562-b3fc-2c963f66afa6').
-        category_id: Alias for categoryId.
         minPrice: Minimum product price filter (must be >= 0).
-        min_price: Alias for minPrice.
         maxPrice: Maximum product price filter (must be >= 0 and >= minPrice).
-        max_price: Alias for maxPrice.
         brand: Filter by brand name (e.g., 'Apple', 'Dell').
         status: Filter by product status (e.g., 'ACTIVE').
         page: Page index (0-indexed, default is 0).
@@ -83,17 +80,12 @@ def search_products(
             "isLast": false
         }
     """
-    # Resolve aliases (camelCase preferred per specification)
-    resolved_category_id = categoryId if categoryId is not None else category_id
-    resolved_min_price = minPrice if minPrice is not None else min_price
-    resolved_max_price = maxPrice if maxPrice is not None else max_price
-
     try:
         filter_criteria = ProductSearchFilter(
             search=search,
-            categoryId=resolved_category_id,
-            minPrice=resolved_min_price,
-            maxPrice=resolved_max_price,
+            categoryId=categoryId,
+            minPrice=minPrice,
+            maxPrice=maxPrice,
             brand=brand,
             status=status,
             page=page,
@@ -120,8 +112,7 @@ def search_products(
         logger.error("Product Service unavailable during search: %s", exc)
         return {
             "error": "Product Service Unavailable",
-            "message": "Product Service is currently unreachable. Please verify the service is running.",
-            "details": str(exc),
+            "message": "Product Service is currently unreachable. Please try again later.",
             "products": [],
             "page": page,
             "size": size,
@@ -133,7 +124,7 @@ def search_products(
         logger.error("Product Service error during search: %s", exc)
         return {
             "error": "Product Service Error",
-            "message": str(exc),
+            "message": "Product Service request failed. Please check your query or try again later.",
             "products": [],
             "page": page,
             "size": size,
@@ -145,14 +136,12 @@ def search_products(
 
 @mcp.tool()
 def get_product(
-    productId: Optional[str] = None,
-    product_id: Optional[str] = None,
+    productId: str,
 ) -> dict[str, Any]:
     """Retrieve details of a specific product by its unique UUID.
 
     Args:
         productId: The UUID of the product to retrieve (required).
-        product_id: Alias for productId.
 
     Returns:
         A dictionary containing the product details:
@@ -160,27 +149,27 @@ def get_product(
             "productId": "...",
             "sellerId": "...",
             "categoryId": "...",
+            "category": {"id": "...", "name": "..."},
             "name": "...",
             "brand": "...",
             "description": "...",
-            "price": 299.99,
+            "price": "299.99",
             "sku": "...",
             "status": "ACTIVE",
             "createdAt": "...",
             "updatedAt": "..."
         }
     """
-    target_id = productId if productId is not None else product_id
-
-    if not target_id:
+    if not productId or not isinstance(productId, str) or not productId.strip():
         return {
             "error": "Validation Error",
             "message": "Missing required parameter 'productId'.",
         }
 
     try:
-        valid_id = validate_uuid(target_id, "productId")
+        valid_id = validate_uuid(productId, "productId")
     except ValueError as exc:
+        logger.warning("Input validation failed for get_product: %s", exc)
         return {
             "error": "Validation Error",
             "message": str(exc),
@@ -200,12 +189,11 @@ def get_product(
         logger.error("Product Service unavailable: %s", exc)
         return {
             "error": "Product Service Unavailable",
-            "message": "Product Service is currently unreachable. Please verify the service is running.",
-            "details": str(exc),
+            "message": "Product Service is currently unreachable. Please try again later.",
         }
     except ProductServiceError as exc:
         logger.error("Product Service error: %s", exc)
         return {
             "error": "Product Service Error",
-            "message": str(exc),
+            "message": "Product Service request failed. Please check your query or try again later.",
         }
