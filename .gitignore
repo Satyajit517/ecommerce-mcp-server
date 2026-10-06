@@ -8,3 +8,5 @@ wheels/
 
 # Virtual environments
 .venv
+
+src/ecommerce_mcp_server/test_mcp_e2e.py

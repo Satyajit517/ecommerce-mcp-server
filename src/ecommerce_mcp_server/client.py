@@ -23,6 +23,14 @@ class ProductServiceError(Exception):
         self.status_code = status_code
 
 
+class ProductAuthenticationError(ProductServiceError):
+    """Raised when Product Service authentication fails (HTTP 401)."""
+
+
+class ProductForbiddenError(ProductServiceError):
+    """Raised when Product Service authorization fails (HTTP 403)."""
+
+
 class ProductNotFoundError(ProductServiceError):
     """Raised when a requested product does not exist (HTTP 404)."""
 
@@ -79,17 +87,24 @@ class ProductServiceClient:
             pass
         return response.text or f"HTTP {response.status_code}"
 
-    def get_product(self, product_id: str) -> ProductItem:
+    def get_product(
+        self,
+        product_id: str,
+        access_token: Optional[str] = None,
+    ) -> ProductItem:
         """Retrieve details of a specific product by its UUID.
 
         Args:
             product_id: UUID of the product.
+            access_token: Optional JWT access token forwarded as Bearer credential.
 
         Returns:
             ProductItem containing normalized product information.
 
         Raises:
             ValueError: If product_id is invalid.
+            ProductAuthenticationError: If token is invalid or expired (401).
+            ProductForbiddenError: If user is not authorized (403).
             ProductNotFoundError: If product is not found (404).
             ProductServiceUnavailableError: If Product Service is down.
             ProductServiceError: On other HTTP/server errors.
@@ -97,14 +112,35 @@ class ProductServiceClient:
         valid_id = validate_uuid(product_id, "productId")
         url = f"{self.base_url}/api/products/{valid_id}"
 
+        headers: dict[str, str] = {}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+
         try:
-            response = self._client.get(url)
+            if headers:
+                response = self._client.get(url, headers=headers)
+            else:
+                response = self._client.get(url)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
             raise ProductServiceUnavailableError(
                 f"Product Service is unavailable at {self.base_url}. Error: {exc}"
             ) from exc
         except Exception as exc:
             raise ProductServiceError(f"Unexpected error communicating with Product Service: {exc}") from exc
+
+        if response.status_code == 401:
+            err_msg = self._extract_error_message(response)
+            raise ProductAuthenticationError(
+                f"Product Service authentication failed (HTTP 401): {err_msg}",
+                status_code=401,
+            )
+
+        if response.status_code == 403:
+            err_msg = self._extract_error_message(response)
+            raise ProductForbiddenError(
+                f"Product Service authorization failed (HTTP 403): {err_msg}",
+                status_code=403,
+            )
 
         if response.status_code == 404:
             err_msg = self._extract_error_message(response)
@@ -129,30 +165,58 @@ class ProductServiceClient:
 
         return ProductItem.from_api_data(data)
 
-    def search_products(self, filter_criteria: ProductSearchFilter) -> ProductSearchResult:
+    def search_products(
+        self,
+        filter_criteria: ProductSearchFilter,
+        access_token: Optional[str] = None,
+    ) -> ProductSearchResult:
         """Search and filter products using the Product Service search endpoint.
 
         Args:
             filter_criteria: Validated search and pagination parameters.
+            access_token: Optional JWT access token forwarded as Bearer credential.
 
         Returns:
             ProductSearchResult containing matched products and pagination info.
 
         Raises:
+            ProductAuthenticationError: If token is invalid or expired (401).
+            ProductForbiddenError: If user is not authorized (403).
             ProductServiceUnavailableError: If Product Service is down.
             ProductServiceError: On other HTTP/server errors.
         """
         url = f"{self.base_url}/api/products/search"
         params = filter_criteria.to_query_params()
 
+        headers: dict[str, str] = {}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+
         try:
-            response = self._client.get(url, params=params)
+            if headers:
+                response = self._client.get(url, params=params, headers=headers)
+            else:
+                response = self._client.get(url, params=params)
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
             raise ProductServiceUnavailableError(
                 f"Product Service is unavailable at {self.base_url}. Error: {exc}"
             ) from exc
         except Exception as exc:
             raise ProductServiceError(f"Unexpected error communicating with Product Service: {exc}") from exc
+
+        if response.status_code == 401:
+            err_msg = self._extract_error_message(response)
+            raise ProductAuthenticationError(
+                f"Product Service authentication failed (HTTP 401): {err_msg}",
+                status_code=401,
+            )
+
+        if response.status_code == 403:
+            err_msg = self._extract_error_message(response)
+            raise ProductForbiddenError(
+                f"Product Service authorization failed (HTTP 403): {err_msg}",
+                status_code=403,
+            )
 
         if response.status_code >= 400:
             err_msg = self._extract_error_message(response)

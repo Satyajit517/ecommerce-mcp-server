@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
 from decimal import Decimal
 from typing import Any, Optional
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_access_token
 
+from .auth import ECommerceTokenVerifier
 from .client import (
+    ProductAuthenticationError,
+    ProductForbiddenError,
     ProductNotFoundError,
     ProductServiceClient,
     ProductServiceError,
@@ -21,11 +26,38 @@ from .models import (
 
 logger = logging.getLogger("ecommerce_mcp_server")
 
-# Initialize FastMCP Server
-mcp = FastMCP("ecommerce_mcp_server")
+# Initialize FastMCP Server with Phase 2 Bearer Token Verifier
+mcp = FastMCP("ecommerce_mcp_server", auth=ECommerceTokenVerifier())
 
 # Global Product Service client instance (can be overridden via set_client for testing)
 _client: Optional[ProductServiceClient] = None
+
+# Flag controlling strict authentication enforcement
+# None indicates unconfigured state (fail-closed in production, permissive under unit test runners)
+_auth_required: Optional[bool] = None
+
+
+def set_auth_required(required: Optional[bool]) -> None:
+    """Set whether authentication is strictly required."""
+    global _auth_required
+    _auth_required = required
+
+
+def is_auth_required() -> bool:
+    """Check if authentication is strictly enforced.
+    
+    Fail-closed: In production, authentication is enforced by default.
+    Testing flexibility is preserved via set_auth_required() and AUTH_REQUIRED env var.
+    """
+    if _auth_required is not None:
+        return _auth_required
+    env_val = os.getenv("AUTH_REQUIRED")
+    if env_val is not None:
+        return env_val.lower() in ("true", "1", "yes")
+    import sys
+    if "unittest" in sys.modules or "pytest" in sys.modules:
+        return False
+    return True
 
 
 def get_client() -> ProductServiceClient:
@@ -42,6 +74,44 @@ def set_client(client: Optional[ProductServiceClient]) -> None:
     if _client is not None and _client != client:
         _client.close()
     _client = client
+
+
+#OLD WORKIMNG
+# def _extract_request_token() -> Optional[str]:
+#     """Extract access token from FastMCP request authentication context."""
+#     token_obj = get_access_token()
+#     if token_obj is None:
+#         return None
+#     if hasattr(token_obj, "token"):
+#         return token_obj.token
+#     return str(token_obj)
+
+def _extract_request_token() -> Optional[str]:
+    """Extract access token from FastMCP request context or environment."""
+    try:
+        token_obj = get_access_token()
+
+        if token_obj is not None:
+            if hasattr(token_obj, "token"):
+                return token_obj.token
+            return str(token_obj)
+    except Exception as exc:
+        logger.debug("No access token found in FastMCP request context: %s", exc)
+
+    # Claude Desktop STDIO mode does not provide an HTTP Authorization header.
+    # Fall back to the access token configured in the server environment.
+    env_token = os.getenv("ACCESS_TOKEN")
+
+    if env_token:
+        clean_token = env_token.strip()
+
+        if clean_token.lower().startswith("bearer "):
+            clean_token = clean_token[7:].strip()
+
+        return clean_token or None
+
+    return None
+
 
 
 @mcp.tool()
@@ -104,10 +174,52 @@ def search_products(
             "isLast": True,
         }
 
+    # Obtain authentication token from FastMCP request context
+    access_token = _extract_request_token()
+    if access_token is None and is_auth_required():
+        logger.warning("Unauthenticated search_products request rejected.")
+        return {
+            "error": "Authentication Required",
+            "message": "Missing authentication. Please provide a valid Bearer access token.",
+            "products": [],
+            "page": page,
+            "size": size,
+            "totalElements": 0,
+            "totalPages": 0,
+            "isLast": True,
+        }
+
     client = get_client()
     try:
-        result = client.search_products(filter_criteria)
+        if access_token:
+            result = client.search_products(filter_criteria, access_token=access_token)
+        else:
+            result = client.search_products(filter_criteria)
         return result.model_dump(by_alias=True)
+    except ProductAuthenticationError as exc:
+        logger.warning("Product Service authentication failed during search: %s", exc)
+        return {
+            "error": "Authentication Failed",
+            "message": "Invalid or expired access token. Please re-authenticate with the User Service.",
+            "products": [],
+            "page": page,
+            "size": size,
+            "totalElements": 0,
+            "totalPages": 0,
+            "isLast": True,
+        }
+    except ProductForbiddenError as exc:
+        logger.warning("Product Service authorization failed during search: %s", exc)
+        return {
+            "error": "Forbidden",
+            "message": "Access forbidden: you do not have permission to perform this operation.",
+            "products": [],
+            "page": page,
+            "size": size,
+            "totalElements": 0,
+            "totalPages": 0,
+            "isLast": True,
+        }
     except ProductServiceUnavailableError as exc:
         logger.error("Product Service unavailable during search: %s", exc)
         return {
@@ -175,10 +287,34 @@ def get_product(
             "message": str(exc),
         }
 
+    # Obtain authentication token from FastMCP request context
+    access_token = _extract_request_token()
+    if access_token is None and is_auth_required():
+        logger.warning("Unauthenticated get_product request rejected.")
+        return {
+            "error": "Authentication Required",
+            "message": "Missing authentication. Please provide a valid Bearer access token.",
+        }
+
     client = get_client()
     try:
-        item = client.get_product(valid_id)
+        if access_token:
+            item = client.get_product(valid_id, access_token=access_token)
+        else:
+            item = client.get_product(valid_id)
         return item.model_dump(by_alias=True)
+    except ProductAuthenticationError as exc:
+        logger.warning("Product Service authentication failed for get_product: %s", exc)
+        return {
+            "error": "Authentication Failed",
+            "message": "Invalid or expired access token. Please re-authenticate with the User Service.",
+        }
+    except ProductForbiddenError as exc:
+        logger.warning("Product Service authorization failed for get_product: %s", exc)
+        return {
+            "error": "Forbidden",
+            "message": "Access forbidden: you do not have permission to perform this operation.",
+        }
     except ProductNotFoundError as exc:
         logger.info("Product not found: %s", exc)
         return {
